@@ -261,76 +261,10 @@ function getAmmoBullets(weapon, incModule)
     return nil
 end
 
--- cache table on NPC
--- npc._vehicleShootCache = {
---   vehicle = <IsoVehicle>,
---   seatIndex = <number>,
---   windowPart = <VehiclePart>
--- }
--- refresh the cache when needed (enter/exit vehicle, seat change, etc.)
-local function RefreshVehicleShootCache(npc)
-    if not npc or not npc.Get then
-        return
-    end
-    local character = npc:Get()
-    if not character then
-        return
-    end
+local cache = setmetatable({}, {
+    __mode = "k"
+})
 
-    local vehicle = character:getVehicle()
-    if not vehicle then
-        npc._vehicleShootCache = nil
-        return
-    end
-
-    -- determine current passenger index
-    local passengerIndex = nil
-    if vehicle.passengers then
-        for i = 1, #vehicle.passengers do
-            local p = vehicle.passengers[i]
-            if p and p.character == character then
-                passengerIndex = i - 1
-                break
-            end
-        end
-    end
-    if not passengerIndex then
-        npc._vehicleShootCache = nil
-        return
-    end
-
-    -- find the window part associated with that seat
-    local foundWindow = nil
-    if vehicle.parts then
-        for i = 1, #vehicle.parts do
-            local part = vehicle.parts[i]
-            if part and part.getContainerSeatNumber and part:getContainerSeatNumber() == passengerIndex then
-                if part.getWindow then
-                    local vw = part:getWindow()
-                    if vw then
-                        foundWindow = part
-                        break
-                    end
-                end
-                if part.getChildWindow then
-                    local childWin = part:getChildWindow()
-                    if childWin then
-                        foundWindow = part
-                        break
-                    end
-                end
-            end
-        end
-    end
-
-    npc._vehicleShootCache = {
-        vehicle = vehicle,
-        seatIndex = passengerIndex,
-        windowPart = foundWindow
-    }
-end
-
--- lightweight check during update
 function CanShootFromVehicle(npc)
     if not npc or not npc.Get then
         return false
@@ -340,41 +274,52 @@ function CanShootFromVehicle(npc)
         return false
     end
 
-    local cache = npc._vehicleShootCache
-    local vehicle = character:getVehicle()
-
-    -- refresh cache if missing or stale
-    if (not cache) or (cache.vehicle ~= vehicle) then
-        RefreshVehicleShootCache(npc)
-        cache = npc._vehicleShootCache
-    end
-
-    if not cache or not cache.vehicle then
+    local vehicleForSurvivor = character:getVehicle()
+    if not vehicleForSurvivor then
+        print("survivor is not in vehicle - clearing vehicle shoot cache")
+        cache[npc] = nil
         return false
     end
+
+    local vehicle = getSpecificPlayer(0):getVehicle()
+    if vehicleForSurvivor ~= vehicle then
+        print("vehicle mismatch - clearing vehicle shoot cache")
+        cache[npc] = nil
+        return false
+    end
+
+    local cached = cache[npc]
+    if (cached ~= nil) then
+        print("using cached vehicle shoot info")
+        return cached
+    end
+    -- check if NPC has a gun and an enemy in range
     if not npc:hasGun() then
-        return false
-    end
-    if not npc.LastEnemeySeen then
-        return false
-    end
-    if not npc:isEnemyInRange(npc.LastEnemeySeen) then
+        cache[npc] = false
         return false
     end
 
-    -- check window state
-    if cache.windowPart then
-        local vw = cache.windowPart:getWindow()
-        if vw and (vw:isDestroyed() or vw:isOpen()) then
-            return true
-        end
-        if cache.windowPart.getChildWindow then
-            local cw = cache.windowPart:getChildWindow()
-            if cw and (cw:isDestroyed() or cw:isOpen()) then
-                return true
-            end
-        end
+    -- 1) find passenger slot index for this character
+    local passengerIndex = vehicle:getSeat(character)
+
+    -- 2) find a VehiclePart that corresponds to that seat (use getContainerSeatNumber)
+    -- iterate all parts and look for parts where getContainerSeatNumber() == passengerIndex
+    if passengerIndex == nil then
+        print("Could not find passenger index for character in vehicle")
+        cache[npc] = false
+        return false
     end
 
+    local window = vehicle:getPassengerDoor(passengerIndex):findWindow()
+    if not window then
+        print("Could not find door part for passenger index " .. tostring(passengerIndex))
+        cache[npc] = false
+        return false
+    end
+    if window:isDestroyed() or window:isOpen() then
+        print("window is open or destroyed")
+        cache[npc] = true
+        return true
+    end
     return false
 end
